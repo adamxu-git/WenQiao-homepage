@@ -42,8 +42,31 @@ api.preload.sounds('generic_load_sounds');
 api.config({
   scroll: true,
   subscribe: false,
-  sound: ['music_start_village', 'village_start'],
+  sound: ['village_start'],
 });
+
+const homepageMusic = new Audio('../../audio/wenqiao-homepage-music.mp3');
+homepageMusic.loop = true;
+homepageMusic.preload = 'auto';
+homepageMusic.volume = 0.65;
+let homepageMusicMuted = true;
+
+function playHomepageMusic() {
+  if (!homepageMusicMuted) {
+    homepageMusic.play().catch(() => {});
+  }
+}
+
+api.addEventListener('muted', () => {
+  homepageMusicMuted = true;
+  homepageMusic.pause();
+});
+api.addEventListener('unmuted', () => {
+  homepageMusicMuted = false;
+  playHomepageMusic();
+});
+api.addEventListener('pause', () => homepageMusic.pause());
+api.addEventListener('resume', playHomepageMusic);
 
 api.preload.images(
   'img/ornament.svg',
@@ -51,10 +74,26 @@ api.preload.images(
   'img/village/2.svg',
   'img/village/3.svg',
   'img/village/4.svg',
-  'img/village/divider.svg',
 );
 
 const mainElement = document.querySelector('main');
+const villageElement = document.getElementById('village');
+const storySection = document.getElementById('wenqiao-story');
+const storyStage = document.getElementById('story-stage');
+const storyLayers = Array.from(document.querySelectorAll('.story-layer'));
+const storyRoute = document.querySelector('.story-route-progress');
+const storyArt = document.querySelector('.story-art');
+const storyRiders = Array.from(document.querySelectorAll('.story-rider')).map((element, index) => ({
+  element,
+  controlledByScroll: index === 0,
+  speed: [0.038, 0.057, 0.078][index],
+  offset: [0.015, 0.16, 0.32][index],
+}));
+let storyRouteLength = 0;
+let storyFurthestProgress = 0;
+let storyMotionActive = false;
+let storyElapsed = 0;
+let storyLastTime = 0;
 
 
 /**
@@ -213,6 +252,78 @@ const configureActionButton = (button, callback) => {
 
 // Game and family-guide actions are intentionally absent on this single-scene homepage.
 
+let scrollFrame = 0;
+
+function updateStoryScene(timestamp = performance.now()) {
+  scrollFrame = 0;
+
+  if (storyMotionActive && storyLastTime) {
+    storyElapsed += Math.min(0.1, (timestamp - storyLastTime) / 1000);
+  }
+  storyLastTime = storyMotionActive ? timestamp : 0;
+
+  const scrollTop = document.scrollingElement.scrollTop;
+  const sectionTop = storySection.getBoundingClientRect().top + scrollTop;
+  const scrollLength = Math.max(1, storySection.offsetHeight - window.innerHeight);
+  const progress = Math.max(0, Math.min(1, (scrollTop - sectionTop) / scrollLength));
+  if (!storyRouteLength) {
+    storyRouteLength = storyRoute.getTotalLength();
+    storyRoute.style.strokeDasharray = storyRouteLength;
+  }
+
+  let leadingRider = 0;
+  storyRiders.forEach(({element, controlledByScroll, speed, offset}) => {
+    const riderProgress = controlledByScroll ? 0.035 + progress * 0.93 : (storyElapsed * speed + offset) % 1;
+    leadingRider = Math.max(leadingRider, riderProgress);
+    const distance = storyRouteLength * riderProgress;
+    const point = storyRoute.getPointAtLength(distance);
+    const before = storyRoute.getPointAtLength(Math.max(0, distance - 3));
+    const after = storyRoute.getPointAtLength(Math.min(storyRouteLength, distance + 3));
+    const artRect = storyArt.getBoundingClientRect();
+    const stageRect = storyStage.getBoundingClientRect();
+    const tangentX = (after.x - before.x) * artRect.width / 1000;
+    const tangentY = (after.y - before.y) * artRect.height / 600;
+    const angle = Math.atan2(tangentY, tangentX) * 180 / Math.PI;
+    element.style.left = `${artRect.left - stageRect.left + point.x * artRect.width / 1000}px`;
+    element.style.top = `${artRect.top - stageRect.top + point.y * artRect.height / 600}px`;
+    element.style.setProperty('--rider-angle', `${angle}deg`);
+  });
+
+  storyFurthestProgress = Math.max(storyFurthestProgress, progress, leadingRider);
+  storyRoute.style.strokeDashoffset = storyRouteLength * (1 - storyFurthestProgress);
+
+  storyLayers.forEach((layer, index) => {
+    const reveal = Math.max(0, Math.min(1, (progress - index * 0.14) / 0.3));
+    layer.style.opacity = reveal;
+    layer.style.transform = `translateY(${(1 - reveal) * 18}px)`;
+  });
+
+  if (storyMotionActive) {
+    scrollFrame = window.requestAnimationFrame(updateStoryScene);
+  }
+}
+
+function scheduleStoryScene() {
+  if (!scrollFrame) {
+    scrollFrame = window.requestAnimationFrame(updateStoryScene);
+  }
+}
+
+window.addEventListener('scroll', scheduleStoryScene, {passive: true});
+window.addEventListener('resize', scheduleStoryScene);
+if ('IntersectionObserver' in window) {
+  const storyObserver = new IntersectionObserver(([entry]) => {
+    storyMotionActive = entry.isIntersecting;
+    if (storyMotionActive) {
+      scheduleStoryScene();
+    } else {
+      storyLastTime = 0;
+    }
+  }, {rootMargin: '120px 0px'});
+  storyObserver.observe(storySection);
+} else {
+  storyMotionActive = true;
+}
 
 api.ready(async () => {
   // jump to target hash (position is often incorrect due to lazy-load)
@@ -228,8 +339,7 @@ api.ready(async () => {
 
   // force lazy-load
   window.dispatchEvent(new CustomEvent('resize'));
-
-  // force focus
+  scheduleStoryScene();
 });
 
 </script>
@@ -247,35 +357,29 @@ api.ready(async () => {
   <h1><span>来问樵逛逛，</span><span>说不定有人正需要你！</span></h1>
 
 </modvil-village>
-<modvil-module id="movies" color="#6900ff" parts="static-png,loop" mode="movies"></modvil-module>
-<modvil-module id="transithub" color="#d4f1fe" parts="static-png,loop,scroll">
-</modvil-module>
-<modvil-module id="sciencelab" color="#3499ff" parts="static-svg,loop,scroll">
-</modvil-module>
-<modvil-module id="toymaking" color="#00c1f2" parts="static-png,static-png,scroll,static-png">
-</modvil-module>
-<modvil-module id="kitchen" color="#fdb0ca" parts="static-png,loop,static-png,static-png">
-</modvil-module>
-<modvil-module id="nursery" color="#6bb4fd" parts="static-png,loop,scroll">
-</modvil-module>
-<modvil-module id="greenhouse" color="#94dae4" parts="static-png,loop,scroll,static-png">
-</modvil-module>
-<modvil-module id="wrapping" color="#5203c0" parts="static-svg,loop,scroll,static-svg">
-</modvil-module>
-<modvil-module id="disco" color="#e5e5e5" parts="static-png,loop,scroll">
-</modvil-module>
-<modvil-module id="gym" color="#e5e5e5" parts="static-png,loop,loop">
-</modvil-module>
-
-<modvil-module id="footer" color="#8ab8d4" parts="static-svg" no-divider>
-</modvil-module>
+<section id="wenqiao-story" aria-label="问樵是什么">
+  <div id="story-stage" class="story-stage">
+    <div class="story-copy">
+      <h2 class="story-layer story-question">问樵是什么？</h2>
+      <p class="story-layer">入山问樵，入水问渔。</p>
+      <p class="story-layer">一个人不知道的时候，<br />总要问问别人。</p>
+      <p class="story-layer">有时候，<br />你刚好就是那个知道的人。</p>
+      <p class="story-layer story-ending">这就是问樵。</p>
+    </div>
+    <svg class="story-art" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true">
+      <path class="story-route-base" d="M 12 438 C 155 438 186 345 312 354 S 498 470 625 424 S 802 347 988 365" />
+      <path class="story-route-progress" d="M 12 438 C 155 438 186 345 312 354 S 498 470 625 424 S 802 347 988 365" />
+      <path class="story-ground" d="M 0 520 Q 235 492 480 516 T 1000 510" />
+    </svg>
+    <img class="story-rider" src="img/village/elfbike1.svg" alt="" />
+    <img class="story-rider" src="img/village/elfbike4.svg" alt="" />
+    <img class="story-rider" src="img/village/elfbike5.svg" alt="" />
+    <div class="story-character-slot story-character-slot--left" aria-hidden="true"></div>
+    <div class="story-character-slot story-character-slot--right" aria-hidden="true"></div>
+  </div>
   </main>
   <div class="sidebar right" aria-hidden="true"></div>
 </div>
-
-<footer>
-  <modvil-arrow dir="up" target="top"></modvil-arrow>
-</footer>
 
 </body>
 </html>
